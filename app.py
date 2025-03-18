@@ -32,9 +32,14 @@ def index():
     return render_template('index.html')
 
 def random_typo(message):
+    # Handle multi-line messages by applying typo to each line
     if random.random() < 0.2:  # 20% chance of typo
-        pos = random.randint(0, len(message) - 1)
-        message = message[:pos] + random.choice('abcdefghijklmnopqrstuvwxyz') + message[pos+1:]
+        lines = message.split('\n')
+        for i in range(len(lines)):
+            if random.random() < 0.2:  # 20% chance per line
+                pos = random.randint(0, len(lines[i]) - 1) if lines[i] else 0
+                lines[i] = lines[i][:pos] + random.choice('abcdefghijklmnopqrstuvwxyz') + lines[i][pos+1:]
+        message = '\n'.join(lines)
     return message
 
 def human_delay(min_delay=1, max_delay=5):
@@ -74,22 +79,32 @@ def run_bot(username, password, usernames, messages, start_time, daily_count, us
                 user_id = cl.user_id_from_username(target_user)
                 user_info = cl.user_info(user_id)
 
-                medias = cl.user_medias(user_id, amount=1)
-                if medias:
-                    media = medias[0]
-                    cl.media_like(media.pk)
-                    logger.info(f"Liked first post (pk={media.pk}) for {target_user}")
+                # Check if the account is private
+                if user_info.is_private:
+                    logger.info(f"Account {target_user} is private. Skipping like and sending DM only.")
                 else:
-                    logger.info(f"No posts found for {target_user}")
+                    # Try to fetch and like the first post for public accounts
+                    try:
+                        medias = cl.user_medias(user_id, amount=1)
+                        if medias:
+                            media = medias[0]
+                            cl.media_like(media.pk)
+                            logger.info(f"Liked first post (pk={media.pk}) for {target_user}")
+                        else:
+                            logger.warning(f"No posts found for {target_user}.")
+                    except ClientError as e:
+                        logger.error(f"Failed to fetch or like media for {target_user}: {str(e)}. Raw response: {cl.last_response.text}")
 
-                message = random_typo(random.choice(messages))
+                # Send the full message, preserving newlines
+                full_message = '\n'.join(messages) if isinstance(messages, list) else messages
+                message = random_typo(full_message)
                 cl.direct_send(message, user_ids=[user_id])
                 logger.info(f"Sent DM to {target_user}: {message}")
                 human_delay()
             except UserNotFound:
                 logger.error(f"User {target_user} not found.")
             except ClientError as e:
-                logger.error(f"Error processing {target_user}: {str(e)}")
+                logger.error(f"Error processing {target_user}: {str(e)}. Raw response: {cl.last_response.text}")
                 human_delay(5, 10)
 
         logger.info("Run completed.")
@@ -145,7 +160,7 @@ def stream_logs():
             while last_index < len(log_store):
                 yield f"data: {log_store[last_index]}\n\n"
                 last_index += 1
-            time.sleep(1)  # Wait for new logs
+            time.sleep(0.1)  # Reduced to avoid Gunicorn timeout
     return Response(generate_logs(), mimetype='text/event-stream')
 
 @app.route('/api/all_logs', methods=['GET'])
@@ -153,4 +168,4 @@ def get_all_logs():
     return jsonify({"logs": log_store})
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
